@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 import joblib
@@ -23,7 +24,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def init_db():
     """Create the transactions table if it does not exist."""
     if not DATABASE_URL:
-        print("⚠️ No DATABASE_URL provided, skipping DB init")
+        logging.error("No DATABASE_URL provided, skipping DB init")
         return
     try:
         conn = psycopg2.connect(DATABASE_URL)
@@ -38,7 +39,7 @@ def init_db():
                 newbalanceOrig FLOAT,
                 oldbalanceDest FLOAT,
                 newbalanceDest FLOAT,
-                fraud_probability FLOAT,
+                fraudProbability FLOAT,
                 flagged BOOLEAN,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -46,25 +47,23 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-        print("Transactions table initialized successfully")
+        logging.info("Transactions table initialized successfully")
     except Exception as e:
-        print("⚠️ DB init failed:", e)
-
+        logging.exception("DB init failed: %s", e)
 
 def log_transaction(data, prob, flagged):
     """Insert transaction record into Postgres with improved logging."""
     if not DATABASE_URL:
         logging.error("DATABASE_URL not set. Skipping DB logging.")
         return
-
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
-            conn.autocommit = True  # Ensures immediate insert
+            conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO transactions (
                         step, type, amount, oldbalanceOrg, newbalanceOrig,
-                        oldbalanceDest, newbalanceDest, fraud_probability, flagged
+                        oldbalanceDest, newbalanceDest, fraudProbability, flagged
                     )
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (
@@ -75,13 +74,20 @@ def log_transaction(data, prob, flagged):
                 ))
         logging.info(f"Transaction logged: {data} | Prob={prob}, Flagged={flagged}")
     except Exception as e:
-        logging.exception("DB logging failed")
-
+        logging.exception("DB logging failed: %s", e)
 
 # -------------------------------
 # FastAPI App
 # -------------------------------
 app = FastAPI(title="Fraud Detection API", version="2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for testing; restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class Transaction(BaseModel):
     step: int
@@ -92,12 +98,10 @@ class Transaction(BaseModel):
     oldbalanceDest: float
     newbalanceDest: float
 
-
 @app.on_event("startup")
 def on_startup():
     """Initialize DB table on app startup."""
     init_db()
-
 
 @app.post("/score-transaction")
 def score_transaction(tx: Transaction):
@@ -110,10 +114,9 @@ def score_transaction(tx: Transaction):
     log_transaction(tx.dict(), prob, flagged)
 
     return {
-        "fraud_probability": round(prob, 4),
+        "fraudProbability": round(prob, 4),
         "flagged": flagged
     }
-
 
 # -------------------------------
 # Local Run (for Render uses $PORT)
